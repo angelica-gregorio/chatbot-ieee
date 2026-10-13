@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Chatbot widget demo</title>
+	<link rel="stylesheet" href="../org-chatbot/assets/css/chat-widget.css">
+	<style>
+		body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1d2327; }
+	</style>
+</head>
+<body>
+	<!--
+		Widget development without WordPress. From the wordpress-plugin/ folder:
+		  python -m http.server 8081
+		and in chatbot-service/:
+		  python scripts/dev_server.py --fake-asr "how can i volunteer"
+		then open http://127.0.0.1:8081/dev/demo.html
+		The config below mirrors what Org_Chatbot_Widget::enqueue() prints in WordPress.
+	-->
+	<main>
+		<h1>Organization website (demo page)</h1>
+		<p>The chat button sits in the bottom-right corner. Try "How do I join?" or ask by voice.</p>
+	</main>
+	<script>
+		window.orgChatbotConfig = {
+			serviceUrl: new URLSearchParams( location.search ).get( 'service' ) || 'http://127.0.0.1:8000',
+			voiceEnabled: true,
+			workletUrl: '../org-chatbot/assets/js/recorder-worklet.js',
+			maxSeconds: 15,
+			botName: 'Ask us',
+			greeting: 'Hi! Ask me a question about the Organization, its events, or volunteering.',
+			privacyUrl: 'https://example.org/privacy/',
+			contactUrl: 'https://example.org/contact/',
+			generalEmail: 'info@example.org',
+			strings: {
+				open: 'Open the FAQ chatbot',
+				close: 'Close chat',
+				inputLabel: 'Type your question',
+				send: 'Send question',
+				mic: 'Ask by voice',
+				stop: 'Stop recording and send',
+				listening: 'Listening… press the microphone button again when you finish.',
+				thinking: 'Looking that up…',
+				transcribing: 'Turning your recording into text…',
+				youSaid: 'You said:',
+				related: 'Related questions',
+				note: 'Answers come only from our FAQ.',
+				privacy: 'Privacy Notice',
+				consentTitle: 'Ask by voice?',
+				consentText: 'Your recording is sent to our chatbot service only to turn it into text so we can find the answer. The recording is not stored. Please do not say personal details such as your full name, phone number or ID numbers.',
+				consentAllow: 'Allow and record',
+				consentCancel: 'Cancel',
+				micBlocked: 'The microphone is not available. Check your browser permission, or type your question instead.',
+				tooShort: 'That recording was too short. Please try again.',
+				offline: 'The chatbot is not available right now.',
+				offlineContact: 'You can still reach us here',
+				offlineEmail: 'or by email at',
+				contactPage: 'Contact page',
+				voiceUnsupported: 'Voice questions are not supported in this browser.'
+			}
+		};
+	</script>
+	<script src="../org-chatbot/assets/js/chat-widget.js" defer></script>
+</body>
+</html>

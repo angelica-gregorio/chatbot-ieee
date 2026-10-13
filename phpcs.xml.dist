@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<ruleset name="OrgChatbot">
+	<description>WordPress Coding Standards for the chatbot plugin (SRS NFR-MNT-05).</description>
+
+	<file>wordpress-plugin/org-chatbot</file>
+	<exclude-pattern>*/assets/*</exclude-pattern>
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+
+	<arg name="extensions" value="php"/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+
+	<config name="minimum_wp_version" value="6.4"/>
+
+	<rule ref="WordPress"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="org-chatbot"/>
+			</property>
+		</properties>
+	</rule>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="org_chatbot"/>
+				<element value="Org_Chatbot"/>
+				<element value="ORG_CHATBOT"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

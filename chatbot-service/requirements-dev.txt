@@ -1,0 +1,4 @@
+# Tests and linting. The tests use fakes for the models, so no PyTorch needed.
+-r requirements.txt
+pytest>=8.0
+ruff>=0.6

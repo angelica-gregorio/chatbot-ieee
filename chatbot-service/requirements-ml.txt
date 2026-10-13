@@ -1,0 +1,8 @@
+# Models: E-Branchformer speech recognition (ESPnet / OWSM v3.1) and the
+# sentence-embedding matcher. Install CPU-only PyTorch first, e.g.
+#   pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.11.*" "torchaudio==2.11.*"
+# ESPnet 202610 requires Python 3.12-3.13, torch >=2.11,<2.15 and torchaudio 2.11.x.
+-r requirements.txt
+espnet==202610.post2
+espnet_model_zoo>=0.1.11
+sentence-transformers>=5.0

@@ -1,0 +1,9 @@
+# Core service: API, knowledge base, lexical matcher, audio handling.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+httpx>=0.27,<1.0
+python-multipart>=0.0.9
+nh3>=0.2.17
+numpy>=2.0
+scipy>=1.13
+soundfile>=0.12
