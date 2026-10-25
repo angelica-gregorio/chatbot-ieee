@@ -135,6 +135,7 @@ def test_decode_downmixes_stereo():
         (wav_bytes(speech_like(16.0)), {}, "audio_too_long"),
         (wav_bytes(speech_like(2.0)), {"max_bytes": 1000}, "audio_too_large"),
     ],
+    ids=lambda v: v if isinstance(v, str) else "",  # raw WAV bytes as ids overflow Windows env vars
 )
 def test_decode_rejects(data, kwargs, code):
     with pytest.raises(AudioError) as info:

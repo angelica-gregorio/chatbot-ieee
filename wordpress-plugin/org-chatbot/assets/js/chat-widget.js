@@ -56,12 +56,16 @@
 		svg.setAttribute( 'focusable', 'false' );
 		const p = document.createElementNS( 'http://www.w3.org/2000/svg', 'path' );
 		p.setAttribute( 'd', path );
+		p.setAttribute( 'fill-rule', 'evenodd' ); // lets inner shapes (the chat dots) cut out
 		svg.append( p );
 		return svg;
 	}
 
 	const ICONS = {
-		chat: 'M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z',
+		chat: 'M5 3h14a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-8l-5 4v-4H5a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z' +
+			'M6.5 10.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z' +
+			'M10.5 10.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z' +
+			'M14.5 10.5a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0z',
 		close: 'M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6z',
 		send: 'M3 20.5 21 12 3 3.5V10l12 2-12 2z',
 		mic: 'M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1a7 7 0 0 0 6-6.9z',
@@ -126,23 +130,21 @@
 
 	/* ---------- audio: capture, resample, WAV ---------- */
 
-	function downsample( samples, inRate ) {
-		if ( inRate === TARGET_RATE ) {
+	async function downsample( samples, inRate ) {
+		if ( inRate === TARGET_RATE || ! samples.length ) {
 			return samples;
 		}
-		const ratio = inRate / TARGET_RATE;
-		const out = new Float32Array( Math.floor( samples.length / ratio ) );
-		for ( let i = 0; i < out.length; i++ ) {
-			// Average each window: a simple low-pass that avoids aliasing.
-			const start = Math.floor( i * ratio );
-			const end = Math.min( samples.length, Math.floor( ( i + 1 ) * ratio ) );
-			let sum = 0;
-			for ( let j = start; j < end; j++ ) {
-				sum += samples[ j ];
-			}
-			out[ i ] = sum / Math.max( 1, end - start );
-		}
-		return out;
+		// Let the browser's resampler do it: it low-passes properly, where a
+		// window average leaves aliasing that blurs consonants for the ASR model.
+		const length = Math.ceil( ( samples.length * TARGET_RATE ) / inRate );
+		const offline = new OfflineAudioContext( 1, length, TARGET_RATE );
+		const buffer = offline.createBuffer( 1, samples.length, inRate );
+		buffer.copyToChannel( samples, 0 );
+		const source = offline.createBufferSource();
+		source.buffer = buffer;
+		source.connect( offline.destination );
+		source.start();
+		return ( await offline.startRendering() ).getChannelData( 0 );
 	}
 
 	function encodeWav( samples ) {
@@ -207,7 +209,7 @@
 				offset += c.length;
 			} );
 			this.chunks = [];
-			const samples = downsample( merged, rate );
+			const samples = await downsample( merged, rate );
 			return { seconds: samples.length / TARGET_RATE, blob: encodeWav( samples ) };
 		}
 	}
@@ -229,10 +231,10 @@
 		title: t.open,
 	}, [ icon( ICONS.chat ), el( 'span', { class: 'org-chatbot__launcher-label', text: cfg.botName } ) ] );
 
-	const closeButton = el( 'button', { type: 'button', class: 'org-chatbot__icon-button', 'aria-label': t.close }, [ icon( ICONS.close ) ] );
+	const closeButton = el( 'button', { type: 'button', class: 'org-chatbot__icon-button org-chatbot__close', 'aria-label': t.close }, [ icon( ICONS.close ) ] );
 	const log = el( 'div', { class: 'org-chatbot__log', role: 'log', 'aria-live': 'polite', tabindex: '0', 'aria-label': cfg.botName } );
 	const input = el( 'input', { id: 'org-chatbot-input', type: 'text', maxlength: '300', autocomplete: 'off', placeholder: t.inputLabel } );
-	const sendButton = el( 'button', { type: 'submit', class: 'org-chatbot__icon-button org-chatbot__send', 'aria-label': t.send }, [ icon( ICONS.send ) ] );
+	const sendButton = el( 'button', { type: 'submit', class: 'org-chatbot__send', 'aria-label': t.send }, [ icon( ICONS.send ) ] );
 	const micButton = voiceSupported
 		? el( 'button', { type: 'button', class: 'org-chatbot__icon-button org-chatbot__mic', 'aria-pressed': 'false', 'aria-label': t.mic }, [ icon( ICONS.mic ) ] )
 		: null;
@@ -261,7 +263,14 @@
 		hidden: true,
 	}, [
 		el( 'header', { class: 'org-chatbot__header' }, [
-			el( 'h2', { id: 'org-chatbot-title', class: 'org-chatbot__title', text: cfg.botName } ),
+			// Decorative: the bot name next to it already says who this is.
+			el( 'span', { class: 'org-chatbot__avatar' }, [
+				cfg.logoUrl ? el( 'img', { src: cfg.logoUrl, alt: '' } ) : icon( ICONS.chat ),
+			] ),
+			el( 'div', { class: 'org-chatbot__heading' }, [
+				el( 'h2', { id: 'org-chatbot-title', class: 'org-chatbot__title', text: cfg.botName } ),
+				cfg.subtitle ? el( 'p', { class: 'org-chatbot__subtitle', text: cfg.subtitle } ) : null,
+			] ),
 			closeButton,
 		] ),
 		log,

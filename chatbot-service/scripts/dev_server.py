@@ -5,6 +5,8 @@
                                                       # every recording "transcribes" to that text;
                                                       # /health reports encoder FakeEncoder
 
+Settings such as ASR_BEAM_SIZE are read from the environment, as in production.
+
 The fake transcriber exists only in this script so frontend work can proceed on a
 laptop without the ~0.5 GB model. Never use it for evaluation.
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import uvicorn
@@ -53,7 +56,10 @@ def main() -> None:
     parser.add_argument("--fake-asr", metavar="TEXT", help="skip the speech model; always transcribe to TEXT")
     args = parser.parse_args()
 
-    settings = Settings(
+    env = Settings.from_env()  # keeps ASR_* and other overrides from the shell
+    settings = replace(
+        env,
+        wp_base_url="",
         kb_file=args.kb,
         allowed_origins=args.origin or ["http://127.0.0.1:8081", "http://localhost:8081"],
         matcher=args.matcher,
