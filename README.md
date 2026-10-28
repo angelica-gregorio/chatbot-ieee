@@ -146,6 +146,19 @@ To check the speech model on your own recordings (16 kHz mono WAV): `python scri
 - Work on a branch and open a pull request: `git checkout -b my-change`, then `git add <files>`, `git commit -m "..."`, `git push -u origin my-change`.
 - Before pushing, run `pytest` and `ruff check .` in `chatbot-service`, and `npm run lint` in the project folder if you changed the widget (needs Node.js 20+ and `npm ci` once). GitHub runs the same checks on every push.
 
+### Packaging for WordPress
+
+The project ships as two pieces, because WordPress hosting cannot run Python or the speech model:
+
+1. **The plugin** (chat widget, FAQ screens, settings). Build the zip:
+   ```bash
+   python wordpress-plugin/dev/package_plugin.py      # -> dist/org-chatbot-<version>.zip
+   ```
+   In WordPress: **Plugins > Add New > Upload Plugin**, choose the zip, then **Activate**. Bump the version in `org-chatbot.php` (header and `ORG_CHATBOT_VERSION`) and `readme.txt` (`Stable tag`, changelog) for every release, so browsers load the new CSS and JS.
+2. **The chatbot service** runs on its own server as a Docker container and must be reachable over HTTPS: `docker build -t org-faq-chatbot chatbot-service`.
+
+Then connect them: set the same shared secret on both sides, enter the service URL in **Chatbot > Settings**, and add the FAQ entries. [docs/deployment.md](docs/deployment.md) walks through all of it.
+
 ### Troubleshooting
 
 | Problem | Fix |

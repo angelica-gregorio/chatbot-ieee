@@ -3,7 +3,7 @@ Contributors: cpecaps-team
 Tags: faq, chatbot, accessibility, voice
 Requires at least: 6.4
 Requires PHP: 8.1
-Stable tag: 0.1.0
+Stable tag: 0.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,6 +28,10 @@ Requires the chatbot service from the same repository (chatbot-service/), reacha
 5. Allow the service in the site's Content-Security-Policy connect-src if one is set.
 
 == Changelog ==
+
+= 0.2.0 =
+* New widget design: gradient header with site icon and site name, rounded message bubbles, orange send button, round launcher.
+* Voice: recordings are resampled to 16 kHz with the browser's resampler, which gives the speech model clearer audio.
 
 = 0.1.0 =
 * First version for Release 2 planning.

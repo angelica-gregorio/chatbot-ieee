@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Organization FAQ Chatbot
  * Description:       FAQ chatbot for the Organization website. Answers typed and spoken questions using only the approved FAQ entries; spoken questions are transcribed by an E-Branchformer speech model in the companion chatbot service.
- * Version:           0.1.0
+ * Version:           0.2.0
  * Requires at least: 6.4
  * Requires PHP:      8.1
  * Author:            CPECAPS project team
@@ -15,7 +15,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'ORG_CHATBOT_VERSION', '0.1.0' );
+define( 'ORG_CHATBOT_VERSION', '0.2.0' );
 define( 'ORG_CHATBOT_FILE', __FILE__ );
 define( 'ORG_CHATBOT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'ORG_CHATBOT_URL', plugin_dir_url( __FILE__ ) );
