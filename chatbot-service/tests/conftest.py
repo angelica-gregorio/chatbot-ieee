@@ -36,6 +36,7 @@ class FakeSpeech2Text:
 
     kwargs: dict = {}
     next_text = "how do i volunteer"
+    next_nbest: list[str] | None = None  # several hypotheses, best first
     encoder_cls = EBranchformerEncoder
     calls = 0
 
@@ -50,8 +51,8 @@ class FakeSpeech2Text:
     def __call__(self, speech):
         type(self).calls += 1
         assert speech.dtype == np.float32 and speech.ndim == 1
-        text = type(self).next_text
-        return [(f"<eng><asr> {text}", [], [], text, None)]
+        texts = type(self).next_nbest or [type(self).next_text]
+        return [(f"<eng><asr> {text}", [], [], text, None) for text in texts]
 
 
 class FakeWordPress:
@@ -106,6 +107,7 @@ def wordpress() -> FakeWordPress:
 def fake_s2t():
     FakeSpeech2Text.kwargs = {}
     FakeSpeech2Text.next_text = "how do i volunteer"
+    FakeSpeech2Text.next_nbest = None
     FakeSpeech2Text.encoder_cls = EBranchformerEncoder
     FakeSpeech2Text.calls = 0
     return FakeSpeech2Text

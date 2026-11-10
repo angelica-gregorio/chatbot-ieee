@@ -25,6 +25,8 @@ wordpress-plugin/dev/screenshots/
 # Speech recordings may contain personal data (docs/privacy.md); never commit them
 *.wav
 recordings/
+# Fine-tuning output (weights, and run.json lists speaker names)
+artifacts/
 
 # Downloaded models are cached outside the repo (~/.cache/huggingface); keep any local copies out too
 models/

@@ -41,6 +41,11 @@ class EBranchformerTranscriber:
         self.load_seconds: float | None = None
 
     @property
+    def nbest(self) -> int:
+        """A beam search keeps beam_size hypotheses, so it cannot return more than that."""
+        return max(1, min(self.settings.asr_nbest, self.settings.asr_beam_size))
+
+    @property
     def ready(self) -> bool:
         return self.state == "ready"
 
@@ -48,12 +53,20 @@ class EBranchformerTranscriber:
         return {
             "state": self.state,
             "model": self.settings.asr_model_tag,
+            "fine_tuned": bool(self.settings.asr_model_file),
             "encoder": self.encoder_class,
             "beam_size": self.settings.asr_beam_size,
+            "ctc_weight": self.settings.asr_ctc_weight,
+            "nbest": self.nbest,
             "quantized": self.settings.asr_quantize,
             "load_seconds": self.load_seconds,
             "error": self.error,
         }
+
+    def _published_files(self) -> dict[str, str]:
+        from espnet2.utils.pretrained import download_pretrained
+
+        return download_pretrained(self.settings.asr_model_tag)
 
     def _build(self) -> Any:
         cls = self._speech2text_cls
@@ -63,11 +76,22 @@ class EBranchformerTranscriber:
 
             if self.settings.asr_threads > 0:
                 torch.set_num_threads(self.settings.asr_threads)
+        model_tag: str | None = self.settings.asr_model_tag
+        files: dict[str, str] = {}
+        if self.settings.asr_model_file:
+            # Same architecture and tokenizer as the published model, our weights.
+            files = {
+                "s2t_train_config": self._published_files()["s2t_train_config"],
+                "s2t_model_file": self.settings.asr_model_file,
+            }
+            model_tag = None
         return cls.from_pretrained(
-            model_tag=self.settings.asr_model_tag,
+            model_tag=model_tag,
+            **files,
             device=self.settings.asr_device,
             beam_size=self.settings.asr_beam_size,
             ctc_weight=self.settings.asr_ctc_weight,
+            nbest=self.nbest,
             lang_sym=self.settings.asr_lang_sym,
             task_sym="<asr>",
             predict_time=False,
@@ -99,17 +123,25 @@ class EBranchformerTranscriber:
             self.error = f"{type(exc).__name__}: {exc}"
             log.error("ASR failed to load: %s", self.error)
 
-    def _decode(self, samples: np.ndarray) -> str:
+    def _decode(self, samples: np.ndarray) -> list[str]:
         with self._lock:  # one decode at a time keeps CPU latency predictable
             results = self._s2t(samples)
         if isinstance(results, tuple):  # (n-best, intermediate CTC outputs)
             results = results[0]
-        if not results:
-            return ""
-        # Each hypothesis is (text, token, token_int, text_nospecial, hyp).
-        return str(results[0][3]).strip()
+        # Each hypothesis is (text, token, token_int, text_nospecial, hyp), best first.
+        texts: list[str] = []
+        for hypothesis in results or []:
+            text = str(hypothesis[3]).strip()
+            if text and text not in texts:
+                texts.append(text)
+        return texts
 
-    def transcribe(self, samples: np.ndarray) -> str:
+    def transcribe_nbest(self, samples: np.ndarray) -> list[str]:
+        """Distinct non-empty transcripts, best first (up to ``nbest``; empty if nothing was heard)."""
         if not self.ready:
             raise RuntimeError(f"ASR is not ready (state: {self.state})")
         return self._decode(samples)
+
+    def transcribe(self, samples: np.ndarray) -> str:
+        texts = self.transcribe_nbest(samples)
+        return texts[0] if texts else ""

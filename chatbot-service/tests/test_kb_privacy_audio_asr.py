@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from app.asr import EBranchformerTranscriber
-from app.audio import AudioError, decode_wav, is_silent
+from app.audio import AudioError, decode_wav, is_silent, normalize_loudness, trim_silence
 from app.config import Settings
 from app.kb import KnowledgeBaseStore, parse_kb
 from app.privacy import for_matching, redact
@@ -162,6 +162,7 @@ def test_asr_loads_with_owsm_arguments(fake_s2t):
         "device": "cpu",
         "beam_size": 1,
         "ctc_weight": 0.0,
+        "nbest": 1,
         "lang_sym": "<eng>",
         "task_sym": "<asr>",
         "predict_time": False,
@@ -195,3 +196,54 @@ def test_asr_disabled():
     transcriber = EBranchformerTranscriber(Settings(asr_enabled=False))
     transcriber.load()
     assert transcriber.state == "disabled" and not transcriber.ready
+
+
+def test_asr_nbest_is_capped_by_beam_and_deduplicated(fake_s2t):
+    fake_s2t.next_nbest = ["how can i volunteer", "how can i volunteer", "", "how can i volunter"]
+    transcriber = EBranchformerTranscriber(Settings(asr_beam_size=3, asr_nbest=5), speech2text_cls=fake_s2t)
+    transcriber.load()
+    assert fake_s2t.kwargs["nbest"] == 3
+    assert transcriber.transcribe_nbest(speech_like()) == ["how can i volunteer", "how can i volunter"]
+    assert transcriber.transcribe(speech_like()) == "how can i volunteer"
+
+
+def test_asr_loads_fine_tuned_weights_with_published_config(fake_s2t, monkeypatch):
+    monkeypatch.setattr(
+        EBranchformerTranscriber,
+        "_published_files",
+        lambda self: {"s2t_train_config": "cfg.yaml", "s2t_model_file": "x"},
+    )
+    transcriber = EBranchformerTranscriber(Settings(asr_model_file="ft/best.pth"), speech2text_cls=fake_s2t)
+    transcriber.load()
+    assert transcriber.state == "ready", transcriber.error
+    assert fake_s2t.kwargs["model_tag"] is None
+    assert fake_s2t.kwargs["s2t_train_config"] == "cfg.yaml"
+    assert fake_s2t.kwargs["s2t_model_file"] == "ft/best.pth"
+    assert transcriber.info()["fine_tuned"] is True
+
+
+# --- audio preprocessing ---------------------------------------------------
+
+
+def test_trim_silence_keeps_speech_and_padding():
+    rate = 16_000
+    speech = speech_like(1.0)
+    padded = np.concatenate([np.zeros(2 * rate, np.float32), speech, np.zeros(3 * rate, np.float32)])
+    trimmed = trim_silence(padded)
+    assert 1.0 * rate <= len(trimmed) <= 1.0 * rate + 0.45 * rate
+    assert np.max(np.abs(trimmed)) == pytest.approx(np.max(np.abs(speech)))
+
+
+def test_trim_silence_leaves_all_silent_audio_alone():
+    silent = np.zeros(16_000, np.float32)
+    assert len(trim_silence(silent)) == len(silent)
+
+
+def test_normalize_loudness_boosts_quiet_audio_without_clipping():
+    quiet = speech_like() * 0.01
+    louder = normalize_loudness(quiet)
+    assert louder.dtype == np.float32
+    assert np.max(np.abs(louder)) <= 0.99
+    assert np.max(np.abs(louder)) == pytest.approx(np.max(np.abs(quiet)) * 10.0, rel=1e-3)  # capped at +20 dB
+    loud = speech_like() * 4.0
+    assert np.max(np.abs(normalize_loudness(loud))) <= 0.99 + 1e-6

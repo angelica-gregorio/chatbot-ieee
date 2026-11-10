@@ -67,9 +67,15 @@ class Settings:
     # Speech recognition (E-Branchformer, via ESPnet).
     asr_enabled: bool = True
     asr_model_tag: str = "espnet/owsm_v3.1_ebf_base"
+    # Fine-tuned weights (.pth from scripts/finetune_owsm.py); the config and
+    # tokenizer still come from asr_model_tag. Empty -> the published weights.
+    asr_model_file: str = ""
     asr_device: str = "cpu"
     asr_beam_size: int = 1
     asr_ctc_weight: float = 0.0
+    asr_nbest: int = 1  # transcripts tried against the FAQ; capped at asr_beam_size
+    asr_trim_silence: bool = True
+    asr_normalize: bool = True
     asr_lang_sym: str = "<eng>"
     asr_quantize: bool = True
     asr_threads: int = 0  # 0 -> leave torch default
@@ -81,6 +87,7 @@ class Settings:
     # Abuse protection and reporting.
     rate_limit_per_minute: int = 20
     trust_proxy_headers: bool = False
+    allow_private_network: bool = False
     report_unanswered: bool = True
 
     @property
@@ -117,9 +124,13 @@ class Settings:
             max_message_chars=_int("MAX_MESSAGE_CHARS", 300),
             asr_enabled=_bool("ASR_ENABLED", True),
             asr_model_tag=_str("ASR_MODEL_TAG", cls.asr_model_tag),
+            asr_model_file=_str("ASR_MODEL_FILE", ""),
             asr_device=_str("ASR_DEVICE", "cpu"),
             asr_beam_size=_int("ASR_BEAM_SIZE", 1),
             asr_ctc_weight=_float("ASR_CTC_WEIGHT", 0.0),
+            asr_nbest=_int("ASR_NBEST", 1),
+            asr_trim_silence=_bool("ASR_TRIM_SILENCE", True),
+            asr_normalize=_bool("ASR_NORMALIZE", True),
             asr_lang_sym=_str("ASR_LANG_SYM", "<eng>"),
             asr_quantize=_bool("ASR_QUANTIZE", True),
             asr_threads=_int("ASR_THREADS", 0),
@@ -129,5 +140,6 @@ class Settings:
             asr_max_upload_bytes=_int("ASR_MAX_UPLOAD_BYTES", 1_500_000),
             rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 20),
             trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
+            allow_private_network=_bool("ALLOW_PRIVATE_NETWORK", False),
             report_unanswered=_bool("REPORT_UNANSWERED", True),
         )

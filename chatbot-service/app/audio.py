@@ -61,3 +61,64 @@ def rms_dbfs(samples: np.ndarray) -> float:
 
 def is_silent(samples: np.ndarray, threshold_dbfs: float = -50.0) -> bool:
     return rms_dbfs(samples) < threshold_dbfs
+
+
+FRAME = TARGET_RATE // 50  # 20 ms
+
+
+def _frame_dbfs(samples: np.ndarray) -> np.ndarray:
+    count = len(samples) // FRAME
+    if count == 0:
+        return np.empty(0)
+    frames = samples[: count * FRAME].astype(np.float64).reshape(count, FRAME)
+    rms = np.sqrt(np.mean(np.square(frames), axis=1))
+    return 20.0 * np.log10(np.maximum(rms, 1e-10))
+
+
+def trim_silence(
+    samples: np.ndarray, floor_dbfs: float = -50.0, below_peak_db: float = 35.0, pad_seconds: float = 0.2
+) -> np.ndarray:
+    """Cut leading and trailing silence, keeping ``pad_seconds`` around the speech.
+
+    A frame counts as speech when it is louder than both an absolute floor and
+    ``below_peak_db`` under the loudest frame, so a noisy room does not count
+    as speech. Long silent tails are a common cause of invented words in
+    Whisper-style decoders such as OWSM. Returns the input unchanged if no
+    frame qualifies (``is_silent`` deals with those).
+    """
+    levels = _frame_dbfs(samples)
+    if levels.size == 0:
+        return samples
+    voiced = np.flatnonzero(levels > max(floor_dbfs, float(levels.max()) - below_peak_db))
+    if voiced.size == 0:
+        return samples
+    pad = int(pad_seconds * TARGET_RATE)
+    start = max(0, int(voiced[0]) * FRAME - pad)
+    end = min(len(samples), (int(voiced[-1]) + 1) * FRAME + pad)
+    return np.ascontiguousarray(samples[start:end])
+
+
+def normalize_loudness(
+    samples: np.ndarray, target_dbfs: float = -20.0, max_gain_db: float = 20.0, peak: float = 0.99
+) -> np.ndarray:
+    """Scale to ``target_dbfs`` RMS, with at most ``max_gain_db`` of boost and no clipping.
+
+    Quiet laptop microphones are the usual case; the gain cap stops a
+    near-silent recording from being amplified into loud noise.
+    """
+    level = rms_dbfs(samples)
+    if not np.isfinite(level):
+        return samples
+    gain = 10.0 ** (min(target_dbfs - level, max_gain_db) / 20.0)
+    top = float(np.max(np.abs(samples))) * gain
+    if top > peak:
+        gain *= peak / top
+    return (samples * gain).astype(np.float32)
+
+
+def prepare_for_asr(samples: np.ndarray, trim: bool = True, normalize: bool = True) -> np.ndarray:
+    if trim:
+        samples = trim_silence(samples)
+    if normalize:
+        samples = normalize_loudness(samples)
+    return samples

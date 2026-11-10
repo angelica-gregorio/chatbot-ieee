@@ -122,3 +122,17 @@ def test_cors_allows_only_configured_origin(client):
         headers={"Origin": "https://evil.example.com", "Access-Control-Request-Method": "POST"},
     )
     assert "access-control-allow-origin" not in bad.headers
+
+
+def test_spoken_question_uses_a_runner_up_transcript_that_matches(client, fake_s2t):
+    fake_s2t.next_nbest = ["how can i bowl and here", "how can i volunteer"]
+    body = client.post("/v1/chat/voice", files={"audio": ("q.wav", wav_bytes(speech_like()), "audio/wav")}).json()
+    assert body["type"] == "answer" and body["faq_id"] == "102"
+    assert body["transcript"] == "how can i volunteer"
+
+
+def test_spoken_question_keeps_top_transcript_when_nothing_matches(client, fake_s2t):
+    fake_s2t.next_nbest = ["what is the weather tomorrow", "what is the whether tomorrow"]
+    body = client.post("/v1/chat/voice", files={"audio": ("q.wav", wav_bytes(speech_like()), "audio/wav")}).json()
+    assert body["type"] == "fallback"
+    assert body["transcript"] == "what is the weather tomorrow"

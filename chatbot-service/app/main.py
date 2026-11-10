@@ -28,10 +28,10 @@ from fastapi.responses import JSONResponse
 
 from . import __version__
 from .asr import EBranchformerTranscriber
-from .audio import AudioError, decode_wav, is_silent
+from .audio import AudioError, decode_wav, is_silent, prepare_for_asr
 from .config import Settings
 from .kb import KnowledgeBase, KnowledgeBaseStore
-from .matcher import Matcher, build_matcher, effective_threshold
+from .matcher import Matcher, build_matcher, effective_threshold, pick_hypothesis
 from .privacy import for_matching
 from .ratelimit import RateLimiter
 from .reporter import UnansweredReporter
@@ -89,11 +89,21 @@ class ChatService:
         kb = await self.knowledge_base()
         if kb is None:
             return None
+        reply, _ = await self.answer_spoken([message], kb)
+        return reply
+
+    async def answer_spoken(self, transcripts: list[str], kb: KnowledgeBase | None = None) -> tuple[Reply | None, str]:
+        """Answer from the best of several transcripts; returns the reply and the transcript used."""
+        kb = kb or await self.knowledge_base()
+        if kb is None:
+            return None, transcripts[0] if transcripts else ""
         started = time.perf_counter()
-        query = for_matching(message)
-        ranked = await run_in_threadpool(self.matcher.rank, query, 5) if query else []
+        queries = [for_matching(text) for text in transcripts]
+        chosen, ranked = await run_in_threadpool(
+            pick_hypothesis, queries, lambda query: self.matcher.rank(query, 5), self.threshold
+        )
         reply = decide(
-            query,
+            queries[chosen],
             kb,
             ranked,
             threshold=self.threshold,
@@ -101,7 +111,7 @@ class ChatService:
             suggest_ratio=self.settings.suggest_ratio,
         )
         reply.timing_ms["match"] = round((time.perf_counter() - started) * 1000, 1)
-        return reply
+        return reply, transcripts[chosen]
 
     def client_id(self, request: Request) -> str:
         if self.settings.trust_proxy_headers:
@@ -130,6 +140,7 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
             allow_origins=settings.allowed_origins,
             allow_methods=["GET", "POST"],
             allow_headers=["Content-Type"],
+            allow_private_network=settings.allow_private_network,
             max_age=600,
         )
 
@@ -202,17 +213,19 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
             del data
 
         asr_started = time.perf_counter()
-        transcript = "" if is_silent(samples) else await run_in_threadpool(service.transcriber.transcribe, samples)
+        transcripts: list[str] = []
+        if not is_silent(samples):
+            samples = prepare_for_asr(samples, trim=settings.asr_trim_silence, normalize=settings.asr_normalize)
+            transcripts = await run_in_threadpool(service.transcriber.transcribe_nbest, samples)
         asr_ms = round((time.perf_counter() - asr_started) * 1000, 1)
         del samples
-        if not transcript:
+        if not transcripts:
             reply = Reply(type="no_speech", text=NO_SPEECH_TEXT, transcript="")
             reply.timing_ms["asr"] = asr_ms
             return finish(reply, started, background, "", "voice")
-        if len(transcript) > settings.max_message_chars:
-            transcript = transcript[: settings.max_message_chars]
+        transcripts = [text[: settings.max_message_chars] for text in transcripts]
 
-        reply = await service.answer(transcript)
+        reply, transcript = await service.answer_spoken(transcripts)
         if reply is None:
             return error(503, "kb_unavailable", "The chatbot is not available right now.")
         reply.transcript = transcript

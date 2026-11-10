@@ -17,6 +17,7 @@ import logging
 import math
 import threading
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -196,6 +197,28 @@ def build_matcher(settings: Settings) -> Matcher:
         except Exception as exc:  # ImportError, network or model errors
             log.warning("Embedding matcher unavailable (%s); using lexical matcher", exc)
     return LexicalMatcher()
+
+
+def pick_hypothesis(
+    hypotheses: list[str], rank: Callable[[str], list[Scored]], threshold: float
+) -> tuple[int, list[Scored]]:
+    """Choose which speech transcript to answer from.
+
+    The recognizer's best transcript wins whenever it clears the threshold.
+    Otherwise the runner-up transcript with the highest-scoring match that
+    clears it is used, which rescues questions where only one word was
+    misheard in the top transcript. If none clears it, the top transcript is
+    kept so the fallback picks its concern from what was most likely said.
+    Returns the chosen index and its ranking.
+    """
+    ranked = [rank(text) if text else [] for text in hypotheses]
+    top = [r[0].score if r else float("-inf") for r in ranked]
+    if not ranked or top[0] >= threshold:
+        return 0, ranked[0] if ranked else []
+    best = max(range(len(ranked)), key=lambda i: top[i])
+    if top[best] >= threshold:
+        return best, ranked[best]
+    return 0, ranked[0]
 
 
 def effective_threshold(settings: Settings, matcher_name: str) -> float:
