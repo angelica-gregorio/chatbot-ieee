@@ -187,7 +187,12 @@ Google builds the image from `chatbot-service/Dockerfile` and stores it in your 
    ```bash
    gcloud artifacts docker images list $REGION-docker.pkg.dev/$PROJECT_ID/chatbot --include-tags
    ```
-5. To keep storage at cents: in the console, open **Artifact Registry → chatbot → Edit → Cleanup policies** and keep only the 2 most recent versions. Storage above the free 0.5 GB costs about $0.10 per GB per month ([Artifact Registry pricing](https://cloud.google.com/artifact-registry/pricing)).
+5. To keep storage at cents, have old images deleted automatically. In the console, open **Artifact Registry → chatbot → Edit**. Under **Cleanup policies**, leave **Delete artifacts** selected (not **Dry run**), add these two policies, and save:
+
+   - `delete-old`: **Conditional delete**, tag state **Any tag state**, older than `30d`.
+   - `keep-latest-2`: **Keep most recent versions**, keep count `2`.
+
+   You need both: a keep policy only protects images, so without the delete policy nothing is ever removed. Where they overlap, keep wins, so the 2 newest images stay however old they are. Changes take effect within about a day ([cleanup policies](https://docs.cloud.google.com/artifact-registry/docs/repositories/cleanup-policy)). Storage above the free 0.5 GB costs about $0.10 per GB per month ([Artifact Registry pricing](https://cloud.google.com/artifact-registry/pricing)).
 
 ### Step 4: Create the shared secret and the service's account
 
