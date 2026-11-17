@@ -124,16 +124,16 @@ Visitor's browser ──(1) page + widget─────────────
    gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
      cloudbuild.googleapis.com secretmanager.googleapis.com iam.googleapis.com
    ```
-7. Get the code from the `cloud-run` branch, which holds the Cloud Run changes (`main` doesn't), and check you got it:
+7. Get the code from the `cloud-run` branch, which holds the Cloud Run changes (`main` doesn't), and check you got it. Replace `your-org` with the GitHub account or organization that owns the repository:
 
    ```bash
-   git clone --branch cloud-run https://github.com/angelica-gregorio/chatbot-ieee.git && cd chatbot-ieee
+   git clone --branch cloud-run https://github.com/your-org/chatbot-ieee.git && cd chatbot-ieee
    git branch --show-current
    ```
 
    It should print `cloud-run`. If it prints `main`, run `git switch cloud-run`.
 
-**Pick a region** close to your visitors and your WordPress host: every question goes from the visitor to the service, and the service fetches the FAQ from WordPress. The free tier is counted at Tier 1 prices ([Cloud Run pricing](https://cloud.google.com/run/pricing)), so a Tier 1 region stretches it furthest. For visitors in the Philippines, `asia-east1` (Taiwan) and `asia-southeast1` (Singapore) are the nearest; check the pricing page for which tier each is in today. Whatever you pick is where visitors' questions and recordings are processed, which matters for Step 8's paperwork.
+**Pick a region** close to your visitors and your WordPress host: every question goes from the visitor to the service, and the service fetches the FAQ from WordPress. The free tier is counted at Tier 1 prices ([Cloud Run pricing](https://cloud.google.com/run/pricing)), so a Tier 1 region stretches it furthest. For example, for visitors in Southeast Asia, `asia-east1` (Taiwan) and `asia-southeast1` (Singapore) are the nearest; check the pricing page for which tier each is in today. Whatever you pick is where visitors' questions and recordings are processed, which matters for Step 8's paperwork.
 
 ### Step 2: Set the spending limits first
 
@@ -367,10 +367,96 @@ Paste the Step 1 variable block into Cloud Shell first.
 | Edit the FAQ | Nothing to do: the service reloads within a minute. Saving an FAQ entry also wakes a sleeping service, which counts as one cold start |
 | Release a new version | Change the tag at the end of `IMAGE` (for example `:0.3.1`), run Step 3's build, then `gcloud run deploy org-faq-chatbot --image="$IMAGE" --region=$REGION`. Other settings carry over. If the plugin changed too, copy its folder again as in Step 6, item 1 |
 | Change a setting | `gcloud run services update org-faq-chatbot --region=$REGION --memory=4Gi` (or `--cpu=4`, `--max-instances=2`, …) |
+| Pause the chatbot | See [Pause and resume the chatbot](#pause-and-resume-the-chatbot). Nothing is deleted, and visitors see the offline message |
+| Test on your computer instead | See [Run the service on your computer instead](#run-the-service-on-your-computer-instead). Cloud Run keeps its settings |
 | Change the shared secret | `printf '%s' "$NEW" \| gcloud secrets versions add org-chatbot-shared-secret --data-file=-`, then `gcloud run services update org-faq-chatbot --region=$REGION --update-secrets=WP_SHARED_SECRET=org-chatbot-shared-secret:latest`, then put the new value in `wp-config.php` straight away. In between, a running service keeps answering from the FAQ it has, but one that starts up then can't load the FAQ. Finally destroy the old version in **Secret Manager** |
 | Watch costs | Cap emails come at 50%, 80% and 100% of $10. Check **Billing → Reports** once a month |
 | The spend cap triggered | The chatbot shows its offline message until the 1st. To restore it sooner, find the cause in **Metrics** (request count) and **Logs**, then open the budget from the spend cap banner, click **Edit budget → Lift spend cap**, and confirm. Service can take up to an hour to return |
 | People change | Keep at least two Owners on the project |
+
+### Pause and resume the chatbot
+
+To stop all Cloud Run use without deleting anything, make the service private. Google then refuses every request before it reaches the container, so no instance starts and CPU and memory cost nothing, even when bots call the address. Only image storage is still billed (see Costs). The service, its settings, the secret and the WordPress setup all stay.
+
+Run these in Cloud Shell with the Step 1 variables and `URL` set.
+
+1. **Pause:**
+
+   ```bash
+   gcloud run services update org-faq-chatbot --region=$REGION --invoker-iam-check
+   ```
+
+   Visitors still see the chat button, but a question gets the offline message with your contact page and email straight away. The notice in **Chatbot → Settings** shows an HTTP 403 error until you resume. To hide the chat button as well, untick **Show the chatbot on public pages** there.
+2. **Check it's paused.** This prints `403` while paused and `200` while running:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' $URL/health
+   ```
+
+3. **Resume:**
+
+   ```bash
+   gcloud run services update org-faq-chatbot --region=$REGION --no-invoker-iam-check
+   ```
+
+   If you hid the chat button, tick **Show the chatbot on public pages** again. The first question after resuming waits through a cold start, with "Starting up the chatbot…" shown.
+
+### Run the service on your computer instead
+
+Use this to test or demo the chatbot without Cloud Run, for example to try a change before releasing it. Cloud Run keeps all its settings, and switching back takes a minute.
+
+The catch: only the browser on the computer running the service can reach it. Every other visitor sees the offline message until you switch back, so use the staging site or a time when nobody else needs the chatbot.
+
+You need Docker Desktop with at least 3 GB of memory for Docker, a clone of the `cloud-run` branch, and WordPress already connected (Step 6), because the local service uses the same shared secret.
+
+1. **Leave Cloud Run as it is.** With 0 minimum instances it sleeps and costs nothing once WordPress stops calling it. To also stop anyone else waking it, make it private in Cloud Shell, with the Step 1 variables set:
+
+   ```bash
+   gcloud run services update org-faq-chatbot --region=$REGION --invoker-iam-check
+   ```
+
+2. **Create the settings file.** In your clone, copy `chatbot-service/.env.example` to `chatbot-service/.env` and set these four lines. `.env` is in `.gitignore`, so the secret stays out of the repository.
+
+   ```
+   WP_BASE_URL=https://www.your-site.org
+   WP_SHARED_SECRET=<the same value as ORG_CHATBOT_SHARED_SECRET in wp-config.php>
+   ALLOWED_ORIGINS=https://www.your-site.org
+   ALLOW_PRIVATE_NETWORK=true
+   ```
+
+   Use the site's address with `https://` and no trailing slash. `ALLOW_PRIVATE_NETWORK=true` lets a page from your public site call a service on your own computer; never set it on a server. Leave `TRUST_PROXY_HEADERS` and `REPORT_IN_REQUEST` at `false`: nothing sits in front of the service, and your computer doesn't throttle it after a reply.
+
+3. **Build and start it** from the root of your clone. The first build downloads the models into the image and takes a while; later builds reuse most of it.
+
+   ```bash
+   docker build -t org-faq-chatbot:local chatbot-service
+   docker run -d --name chatbot-local --env-file chatbot-service/.env -p 127.0.0.1:8000:8000 org-faq-chatbot:local
+   ```
+
+   After about a minute, open http://127.0.0.1:8000/health. It should show `"status":"ok"`, `"entries"` above 0, and `"state":"ready"` under `asr`. A `403` in `last_error` means `WP_SHARED_SECRET` differs from `wp-config.php`.
+
+4. **Point WordPress at it.** Note the Cloud Run address first (Step 5's `URL`), so you can put it back. In **Chatbot → Settings**, set **Chatbot service URL** to `http://127.0.0.1:8000` (plain `http` is allowed only for local addresses), untick **The service sleeps when nobody is chatting**, and save.
+
+   The notice at the top will say "Chatbot service unreachable". Ignore it: that check runs on the WordPress server, which can't see your computer. For the same reason, saving an FAQ entry doesn't reload the FAQ straight away; the service picks up changes within a minute.
+
+5. **Test it** in Chrome or Edge on the same computer: ask a typed and a spoken question on the site. If the browser asks to let the site access devices on your local network, allow it. If the chat says "not available", look in DevTools' Console for a CORS error (check `ALLOWED_ORIGINS`) or a blocked local-network request.
+
+**To switch back to Cloud Run:**
+
+1. In **Chatbot → Settings**, put the `https://org-faq-chatbot-….run.app` address back, tick **The service sleeps when nobody is chatting**, and save. The notice can show the old result for a minute; reload, and it should say "Service connected".
+2. If you made Cloud Run private in item 1, make it public again:
+
+   ```bash
+   gcloud run services update org-faq-chatbot --region=$REGION --no-invoker-iam-check
+   ```
+
+3. Stop the local copy:
+
+   ```bash
+   docker stop chatbot-local
+   ```
+
+   Next time, `docker start chatbot-local` starts it with the same settings. After changing `.env` or rebuilding, run `docker rm chatbot-local` and then item 3's `docker run` again.
 
 ### Troubleshooting
 
