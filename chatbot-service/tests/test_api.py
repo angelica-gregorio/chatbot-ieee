@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from fastapi import BackgroundTasks
 
 from .conftest import SECRET, speech_like, wav_bytes
 
@@ -136,3 +137,49 @@ def test_spoken_question_keeps_top_transcript_when_nothing_matches(client, fake_
     body = client.post("/v1/chat/voice", files={"audio": ("q.wav", wav_bytes(speech_like()), "audio/wav")}).json()
     assert body["type"] == "fallback"
     assert body["transcript"] == "what is the weather tomorrow"
+
+
+def test_ready_waits_for_the_speech_model(client, service):
+    assert client.get("/ready").status_code == 200
+    service.transcriber.state = "loading"
+    response = client.get("/ready")
+    assert response.status_code == 503 and response.json()["ready"] is False
+    service.transcriber.state = "error"  # a failed model must not keep the instance from starting
+    assert client.get("/ready").status_code == 200
+
+
+def test_forwarded_for_uses_the_address_the_proxy_appended(client, service, settings):
+    object.__setattr__(settings, "trust_proxy_headers", True)
+    service.limiter.per_minute = 2
+
+    def send(forged: str) -> int:
+        headers = {"X-Forwarded-For": f"{forged}, 203.0.113.9"}
+        return client.post("/v1/chat", json={"message": "hi"}, headers=headers).status_code
+
+    # Forging a new first entry on each request must not reset the visitor's limit.
+    assert [send("192.0.2.1"), send("192.0.2.2"), send("192.0.2.3")] == [200, 200, 429]
+
+
+def test_unanswered_report_in_request_is_sent_before_the_reply(client, settings, wordpress, monkeypatch):
+    queued = []
+    monkeypatch.setattr(BackgroundTasks, "add_task", lambda self, func, *args, **kwargs: queued.append(func))
+
+    object.__setattr__(settings, "report_in_request", True)
+    assert client.post("/v1/chat", json={"message": "Is parking free?"}).json()["type"] == "fallback"
+    assert wordpress.unanswered[-1]["question"] == "Is parking free?"
+    assert queued == []  # sent during the request, while the host still gives it CPU
+
+    object.__setattr__(settings, "report_in_request", False)
+    client.post("/v1/chat", json={"message": "Is the canteen open?"})
+    assert len(queued) == 1  # default: queued to run after the reply
+
+
+def test_failed_in_request_report_still_returns_the_reply(client, service, settings):
+    class BrokenReporter:
+        async def report(self, question, source):
+            raise RuntimeError("unexpected")
+
+    object.__setattr__(settings, "report_in_request", True)
+    service.reporter = BrokenReporter()
+    response = client.post("/v1/chat", json={"message": "Is parking free?"})
+    assert response.status_code == 200 and response.json()["type"] == "fallback"

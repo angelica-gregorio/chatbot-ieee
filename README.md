@@ -186,7 +186,7 @@ Settings are environment variables; `chatbot-service/.env.example` lists all of 
 
 | Command | What it checks | SRS |
 | --- | --- | --- |
-| `cd chatbot-service && pytest` | 57 unit and API tests: matching, fallback routing, redaction, KB refresh, audio validation, ESPnet wrapper | FR-21-23 |
+| `cd chatbot-service && pytest` | 68 unit and API tests: matching, fallback routing, redaction, KB refresh, audio validation, ESPnet wrapper | FR-21-23 |
 | `python eval/run_eval.py --matcher lexical` | Acceptance criteria on the sample data | FR-21, FR-22, NFR-PERF-06, NFR-SAF-04 |
 | `python eval/asr_eval.py recordings.csv` | WER, spoken-question accuracy, ASR latency | FR-24, NFR-PERF-07 (proposed) |
 | `python wordpress-plugin/dev/e2e_widget.py --service-python chatbot-service/.venv/bin/python` (Windows: `.venv\Scripts\python.exe`). Needs `npm ci`, `pip install playwright`, `python -m playwright install chromium`, and ports 8000/8081 free (stop your own dev servers first) | Headless Chromium: typed answer, fallback, voice via fake mic, axe-core WCAG 2.2 AA, 360 px, offline | FR-21, FR-22, NFR-USE-01/02, NFR-AVL-04 |
@@ -214,7 +214,7 @@ The widget passes all 10 headless-browser checks with 0 axe-core violations. On 
 ## Open items
 
 - **FAQ set (TBD-05):** replace the sample data with the client-approved FAQ and test questions, then calibrate.
-- **Hosting:** free Hugging Face Docker Spaces are no longer available to new free accounts; pick a host ([docs/deployment.md](docs/deployment.md)) and get approval for any cost (C-10).
+- **Hosting:** free Hugging Face Docker Spaces are no longer available to new free accounts. Google Cloud Run, which sleeps when idle, is set up step by step in [docs/deployment.md, section 5](docs/deployment.md#5-google-cloud-run); get approval for any cost (C-10).
 - **Voice latency and accuracy:** measure on the chosen host and with recordings from members before agreeing FR-24 / NFR-PERF-07.
 - **SRS v1.1:** agree the changes in [docs/srs-change-request.md](docs/srs-change-request.md) with the client.
 - **Privacy Notice:** DPO review of [docs/privacy.md](docs/privacy.md).

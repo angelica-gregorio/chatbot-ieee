@@ -46,6 +46,7 @@ class Org_Chatbot_Settings {
 		return array(
 			'widget_enabled'     => true,
 			'voice_enabled'      => true,
+			'serverless'         => false,
 			'service_url'        => '',
 			'shared_secret'      => '',
 			'bot_name'           => __( 'Ask us', 'org-chatbot' ),
@@ -211,6 +212,7 @@ class Org_Chatbot_Settings {
 
 		$clean['widget_enabled']    = ! empty( $input['widget_enabled'] );
 		$clean['voice_enabled']     = ! empty( $input['voice_enabled'] );
+		$clean['serverless']        = ! empty( $input['serverless'] );
 		$clean['register_faq_type'] = ! empty( $input['register_faq_type'] );
 
 		$clean['service_url'] = untrailingslashit( esc_url_raw( (string) ( $input['service_url'] ?? '' ), array( 'https', 'http' ) ) );

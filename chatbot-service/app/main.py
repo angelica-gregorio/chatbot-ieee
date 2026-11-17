@@ -3,6 +3,7 @@
 Endpoints
 ---------
 GET  /health            status of the knowledge base, matcher and speech model
+GET  /ready             200 once startup work is done (for a host's startup probe), else 503
 POST /v1/chat           {"message": "..."} -> reply
 POST /v1/chat/voice     multipart "audio" (WAV) -> reply with "transcript"
 POST /v1/kb/refresh     called by WordPress when an FAQ entry changes (secret header)
@@ -65,6 +66,7 @@ class ChatService:
         self.limiter = RateLimiter(settings.rate_limit_per_minute)
         self._indexed_version: str | None = None
         self._index_lock = asyncio.Lock()
+        self.started = False  # set once startup work is done (see create_app's lifespan)
 
     @property
     def matcher(self) -> Matcher:
@@ -115,10 +117,18 @@ class ChatService:
 
     def client_id(self, request: Request) -> str:
         if self.settings.trust_proxy_headers:
-            forwarded = request.headers.get("x-forwarded-for", "")
-            if forwarded:
-                return forwarded.split(",")[0].strip()
+            # The trusted proxy (Cloud Run, nginx's $proxy_add_x_forwarded_for, ...) appends
+            # the address it saw to the END of the header. Anything before it was written by
+            # the client and can be forged, so only the last entry is used.
+            last = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
+            if last:
+                return last
         return request.client.host if request.client else "unknown"
+
+    @property
+    def ready(self) -> bool:
+        """Startup work is finished: the speech model has loaded (or failed, or is disabled)."""
+        return self.started and self.transcriber.state != "loading"
 
 
 def create_app(settings: Settings | None = None, service: ChatService | None = None) -> FastAPI:
@@ -127,9 +137,13 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await service.knowledge_base()  # first load and index; failures are retried later
         if settings.asr_enabled and service.transcriber.state == "loading":
             threading.Thread(target=service.transcriber.load, name="asr-load", daemon=True).start()
+        # Load the matcher (embedding model) even if WordPress is unreachable right now, so the
+        # work happens during startup, while serverless hosts give the container full CPU.
+        await run_in_threadpool(lambda: service.matcher)
+        await service.knowledge_base()  # first load and index; failures are retried later
+        service.started = True
         yield
 
     app = FastAPI(title="Organization FAQ chatbot", version=__version__, lifespan=lifespan)
@@ -144,10 +158,17 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
             max_age=600,
         )
 
-    def finish(reply: Reply, started: float, background: BackgroundTasks, question: str, source: str) -> dict:
-        reply.timing_ms["total"] = round((time.perf_counter() - started) * 1000, 1)
+    async def finish(reply: Reply, started: float, background: BackgroundTasks, question: str, source: str) -> dict:
         if reply.type == "fallback":
-            background.add_task(service.reporter.report, question, source)
+            if settings.report_in_request:
+                # Serverless hosts throttle CPU once the response is sent, so report first.
+                try:
+                    await service.reporter.report(question, source)
+                except Exception as exc:  # the visitor still gets the reply
+                    log.warning("Could not record unanswered question: %s", type(exc).__name__)
+            else:
+                background.add_task(service.reporter.report, question, source)
+        reply.timing_ms["total"] = round((time.perf_counter() - started) * 1000, 1)
         log.info(
             "reply type=%s faq=%s source=%s total_ms=%s", reply.type, reply.faq_id, source, reply.timing_ms["total"]
         )
@@ -167,6 +188,15 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
             "matcher": {"name": service.matcher.name, "threshold": service.threshold},
             "asr": service.transcriber.info(),
         }
+
+    @app.get("/ready")
+    async def ready():
+        body = {
+            "ready": service.ready,
+            "asr": service.transcriber.state,
+            "knowledge_base": service.kb_store.current is not None,
+        }
+        return body if service.ready else JSONResponse(status_code=503, content=body)
 
     @app.post("/v1/chat")
     async def chat(request: Request, background: BackgroundTasks):
@@ -188,7 +218,7 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
         reply = await service.answer(message)
         if reply is None:
             return error(503, "kb_unavailable", "The chatbot is not available right now.")
-        return finish(reply, started, background, message, "text")
+        return await finish(reply, started, background, message, "text")
 
     @app.post("/v1/chat/voice")
     async def chat_voice(request: Request, background: BackgroundTasks, audio: UploadFile = File(...)):
@@ -222,7 +252,7 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
         if not transcripts:
             reply = Reply(type="no_speech", text=NO_SPEECH_TEXT, transcript="")
             reply.timing_ms["asr"] = asr_ms
-            return finish(reply, started, background, "", "voice")
+            return await finish(reply, started, background, "", "voice")
         transcripts = [text[: settings.max_message_chars] for text in transcripts]
 
         reply, transcript = await service.answer_spoken(transcripts)
@@ -230,7 +260,7 @@ def create_app(settings: Settings | None = None, service: ChatService | None = N
             return error(503, "kb_unavailable", "The chatbot is not available right now.")
         reply.transcript = transcript
         reply.timing_ms["asr"] = asr_ms
-        return finish(reply, started, background, transcript, "voice")
+        return await finish(reply, started, background, transcript, "voice")
 
     @app.post("/v1/kb/refresh")
     async def refresh(request: Request):

@@ -9,6 +9,7 @@ The service is a standard Docker container. It needs a public HTTPS address the 
 | Option | Notes |
 | --- | --- |
 | Organization or school server / VM | Usually the cheapest; put it behind the existing reverse proxy for HTTPS |
+| Google Cloud Run | Sleeps when nobody is chatting, so it usually stays inside the free tier; a cold start makes the first visitor after a quiet period wait about a minute. Step-by-step guide: [section 5](#5-google-cloud-run) |
 | Cloud VM or container platform | Check current free-tier terms and memory limits before relying on them |
 | Hugging Face Space | Since mid-2026, free accounts can no longer create Docker Spaces on CPU Basic; a paid plan is needed, which requires written client approval (C-10) |
 
@@ -71,3 +72,331 @@ Export `exported_kb.json` from `GET /wp-json/org-chatbot/v1/kb` (send the `X-Org
 - Block the service domain in browser DevTools; the page still loads and the chat shows the Contact page and email (NFR-AVL-04).
 
 Sources: [Hugging Face Spaces overview](https://huggingface.co/docs/hub/en/spaces-overview), [community thread on the CPU Basic change](https://discuss.huggingface.co/t/official-community-complaint-revert-free-cpu-basic-spaces-and-remove-anti-developer-sdk-restrictions/177703).
+
+## 5. Google Cloud Run
+
+When you finish, the chatbot service runs on Google Cloud Run. It starts when a visitor opens the chat, sleeps (and costs nothing) when nobody is chatting, and a spend cap stops it at $10 a month. Expect 1 to 2 hours the first time. At the traffic a club or organization FAQ usually sees, the monthly bill should be about $0.10 to $0.30, almost all of it image storage.
+
+```
+Visitor's browser ──(1) page + widget──────────────▶ WordPress site
+       │                                                  ▲
+       └──(2) question / recording (HTTPS, CORS)──▶ Cloud Run: org-faq-chatbot
+                                                          │
+                     (3) FAQ entries, unanswered log ─────┘  (shared secret header)
+```
+
+1. WordPress serves the page and the chat widget. It knows the Cloud Run address but never sends the shared secret to the browser.
+2. The widget sends questions and recordings straight to Cloud Run. When the chat is opened, it wakes the service and shows "Starting up the chatbot…" while it starts.
+3. The service fetches the FAQ from WordPress and records unanswered questions there. Both use the shared secret, which lives only in `wp-config.php` and Secret Manager.
+
+| Part | Where it runs | What it does |
+| --- | --- | --- |
+| Chat widget (plugin 0.3.0) | Visitor's browser | Wakes the service when the chat opens, waits through a cold start, asks the questions |
+| Org Chatbot plugin 0.3.0 | WordPress | Serves the widget, publishes the FAQ to the service, logs unanswered questions |
+| `org-faq-chatbot` service | Cloud Run: 2 vCPU, 3 GiB, 0 to 1 instances | Loads the FAQ, transcribes voice with E-Branchformer, matches questions, answers |
+| Spend cap and budget alert | Cloud Billing | Pauses Cloud Run at $10 a month; emails you about storage and build costs |
+
+**Before you start:**
+
+- [ ] Approval to put a card on a Google Cloud billing account (constraint C-10), even though the expected bill is cents.
+- [ ] Admin access to WordPress, plus SFTP or your host's file manager, to copy the plugin folder and edit `wp-config.php`.
+- [ ] A clone of this repository on your computer with plugin version 0.3.0 or later (the `Version:` line in `wordpress-plugin/org-chatbot/org-chatbot.php`). Step 6 copies the plugin from it.
+- [ ] A browser. Every Google Cloud command runs in **Cloud Shell**, a terminal in the Google Cloud console that is already signed in, so you install nothing.
+
+### Step 1: Create the Google Cloud project
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in with an account the organization controls, not a member's personal Gmail, so access doesn't leave with one person.
+2. Open the project picker at the top, choose **New project**, name it `Org FAQ chatbot`, and create it. Write down the **Project ID** it shows (for example `org-faq-chatbot-123456`).
+3. Go to **Billing** and link the project to a billing account, creating one with the card if needed. If Google creates an organization resource for a new account, it starts with stricter "secure by default" policies ([Google Cloud docs](https://cloud.google.com/resource-manager/docs/secure-by-default-organizations)). Steps 3 and 5 account for them.
+4. Click **Activate Cloud Shell** (`>_`, top right). A terminal opens at the bottom of the page.
+5. Paste this block after replacing the values on the first three lines. Cloud Shell forgets them when it reconnects, so paste it again at the start of every session:
+
+   ```bash
+   PROJECT_ID=org-faq-chatbot-123456   # your Project ID
+   REGION=asia-east1                   # see "Pick a region" below
+   SITE=https://www.your-site.org      # your WordPress address, no trailing slash
+   IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/chatbot/org-faq-chatbot:0.3.0
+   gcloud config set project $PROJECT_ID
+   ```
+6. Switch on the services (about a minute):
+
+   ```bash
+   gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+     cloudbuild.googleapis.com secretmanager.googleapis.com iam.googleapis.com
+   ```
+7. Get the code from the `cloud-run` branch, which holds the Cloud Run changes (`main` doesn't), and check you got it:
+
+   ```bash
+   git clone --branch cloud-run https://github.com/angelica-gregorio/chatbot-ieee.git && cd chatbot-ieee
+   git branch --show-current
+   ```
+
+   It should print `cloud-run`. If it prints `main`, run `git switch cloud-run`.
+
+**Pick a region** close to your visitors and your WordPress host: every question goes from the visitor to the service, and the service fetches the FAQ from WordPress. The free tier is counted at Tier 1 prices ([Cloud Run pricing](https://cloud.google.com/run/pricing)), so a Tier 1 region stretches it furthest. For visitors in the Philippines, `asia-east1` (Taiwan) and `asia-southeast1` (Singapore) are the nearest; check the pricing page for which tier each is in today. Whatever you pick is where visitors' questions and recordings are processed, which matters for Step 8's paperwork.
+
+### Step 2: Set the spending limits first
+
+Before anything can cost money, create a **spend cap** that pauses Cloud Run at $10 a month, and a **budget alert** for everything else.
+
+**Spend cap on Cloud Run** ([how spend caps work](https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps)):
+
+1. Go to **Billing → Budgets & alerts → Create budget**.
+2. Choose **Spend cap enforcement** (not **Alerts only**) and name it `Chatbot Cloud Run cap`.
+3. Under **Scope**, pick this project and the **Cloud Run** service. A cap covers exactly one project and one service.
+4. Enter **$10** as the target amount. The time range is fixed to monthly.
+5. Click **Finish**. Billing administrators and project owners get emails at 50%, 80% and 100% of the cap; these can't be changed.
+
+Why $10: the cap counts gross costs at list price, before credits and discounts. Google doesn't say whether the free tier counts as a discount, so assume the cap sees your usage at full price. Typical use is about $4 a month at full price (see Costs), so a lower cap could pause the chatbot while your real bill is still $0. When the cap triggers, new requests to Cloud Run are paused (nothing is deleted) and visitors see the chatbot's offline message with your contact page and email, until the cap resets on the first of the next month or you lift it. Enforcement isn't instant, so a sudden spike can go slightly over, and the overage is billed.
+
+**Alert for everything else:**
+
+1. **Create budget** again, this time **Alerts only**, named `Chatbot account alert`.
+2. Scope: this project, all services. Amount: **$5**. Keep the default email thresholds.
+3. This covers image storage, builds and secrets, which the Cloud Run cap doesn't stop. Expect them to stay well under $1.
+
+### Step 3: Build the container image
+
+Google builds the image from `chatbot-service/Dockerfile` and stores it in your project, so you don't need Docker on your computer. The image contains CPU-only PyTorch and both models (about 3.9 GB unpacked), so nothing is downloaded when the service starts.
+
+1. Create the image repository (once):
+
+   ```bash
+   gcloud artifacts repositories create chatbot --repository-format=docker \
+     --location=$REGION --description="Org FAQ chatbot images"
+   ```
+2. Give the build account the three rights it needs. Newer projects no longer give it broad rights automatically, so builds fail with `PERMISSION_DENIED` without this:
+
+   ```bash
+   PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+   BUILDER=$PROJECT_NUMBER-compute@developer.gserviceaccount.com
+   for ROLE in roles/artifactregistry.writer roles/logging.logWriter roles/storage.objectViewer; do
+     gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$BUILDER \
+       --role=$ROLE --condition=None -q > /dev/null
+   done
+   ```
+3. From the `chatbot-ieee` folder, build and store the image. It downloads PyTorch, ESPnet and the models; allow up to an hour (it usually takes 10 to 20 minutes):
+
+   ```bash
+   gcloud builds submit chatbot-service --tag "$IMAGE" --timeout=3600s
+   ```
+
+   Builds run on the default `e2-standard-2` machine, which gets 2,500 free build-minutes a month ([Cloud Build pricing](https://cloud.google.com/build/pricing)).
+4. Check the image is there:
+
+   ```bash
+   gcloud artifacts docker images list $REGION-docker.pkg.dev/$PROJECT_ID/chatbot --include-tags
+   ```
+5. To keep storage at cents: in the console, open **Artifact Registry → chatbot → Edit → Cleanup policies** and keep only the 2 most recent versions. Storage above the free 0.5 GB costs about $0.10 per GB per month ([Artifact Registry pricing](https://cloud.google.com/artifact-registry/pricing)).
+
+### Step 4: Create the shared secret and the service's account
+
+**4a. Shared secret.** Generate it and store it in Secret Manager:
+
+```bash
+SECRET=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+printf '%s' "$SECRET" | gcloud secrets create org-chatbot-shared-secret \
+  --replication-policy=automatic --data-file=-
+echo "$SECRET"   # copy it into the organization's password manager now: Step 6 needs it
+```
+
+**4b. The account the service runs as.** It can read that one secret and nothing else. The default account may have far broader rights:
+
+```bash
+gcloud iam service-accounts create chatbot-runtime --display-name="Chatbot service (runtime)"
+gcloud secrets add-iam-policy-binding org-chatbot-shared-secret \
+  --member=serviceAccount:chatbot-runtime@$PROJECT_ID.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor
+```
+
+No key file is created for this account, and none is needed.
+
+### Step 5: Deploy the service
+
+1. Deploy with every setting at once:
+
+   ```bash
+   gcloud run deploy org-faq-chatbot --image="$IMAGE" --region=$REGION \
+     --service-account=chatbot-runtime@$PROJECT_ID.iam.gserviceaccount.com \
+     --port=8000 --cpu=2 --memory=3Gi --cpu-boost \
+     --min-instances=0 --max-instances=1 --concurrency=20 --timeout=300 \
+     --startup-probe=httpGet.path=/ready,httpGet.port=8000,initialDelaySeconds=0,failureThreshold=60,timeoutSeconds=4,periodSeconds=5 \
+     --set-env-vars=WP_BASE_URL=$SITE,ALLOWED_ORIGINS=$SITE,TRUST_PROXY_HEADERS=true,REPORT_IN_REQUEST=true,HF_HUB_OFFLINE=1 \
+     --set-secrets=WP_SHARED_SECRET=org-chatbot-shared-secret:latest \
+     --no-invoker-iam-check
+   ```
+
+   If the site answers on two addresses (with and without `www`), list both in `ALLOWED_ORIGINS`. The comma would end the flag, so switch the separator to `@`: `--set-env-vars=^@^WP_BASE_URL=$SITE@ALLOWED_ORIGINS=https://your-site.org,https://www.your-site.org@TRUST_PROXY_HEADERS=true@REPORT_IN_REQUEST=true@HF_HUB_OFFLINE=1`.
+2. Save the service's address for Step 6:
+
+   ```bash
+   URL=$(gcloud run services describe org-faq-chatbot --region=$REGION --format='value(status.url)'); echo $URL
+   ```
+3. Check that it starts. The first call wakes the service and can take a minute; the reply should show `"state":"ready"` and `"EBranchformerEncoder"` under `asr`, and `"entries"` above 0 once WordPress is connected (Step 6):
+
+   ```bash
+   curl -s $URL/health; echo
+   ```
+4. **Stop Google from keeping visitors' IP addresses.** Cloud Run writes a request log line for every request, with the visitor's IP address and browser, and keeps it for 30 days. The service itself never logs addresses ([privacy.md](privacy.md)), so exclude those lines:
+
+   ```bash
+   gcloud logging sinks update _Default \
+     --add-exclusion='name=chatbot-request-logs,filter=resource.type="cloud_run_revision" AND log_id("run.googleapis.com/requests")'
+   ```
+
+   In the console this is **Logging → Log Router → _Default → Edit sink → Add exclusion**, with the same filter. The service's own log lines (startup, `reply … total_ms`) are kept. Request counts and status codes are still under **Cloud Run → Metrics**.
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `--cpu` / `--memory` | 2 / 3Gi | Measured: about 1.3 GiB after loading, about 1.4 GiB after voice questions. 3 GiB leaves headroom; Step 7 checks the real peak |
+| `--cpu-boost` | on | Twice the CPU during startup (and 10 s after), so the models load faster. The boosted CPU is billed ([CPU limits](https://docs.cloud.google.com/run/docs/configuring/cpu)) |
+| `--min-instances` / `--max-instances` | 0 / 1 | Sleeps when idle, so idle time isn't billed. At most one instance ever runs, which caps the worst case |
+| `--concurrency` | 20 | Typed questions run side by side; voice transcription is one at a time by design |
+| `--startup-probe` | `/ready`, every 5 s, 60 tries | Visitors' requests wait until the FAQ, matcher and speech model are loaded (5 minutes at most; Cloud Run's limit is 10 minutes). Measured on a laptop: ready in about 31 s ([health checks](https://docs.cloud.google.com/run/docs/configuring/healthchecks)) |
+| Billing | request-based (the default) | Billed only while starting up and handling requests, not while idle. Don't add `--no-cpu-throttling`: that switches to instance-based billing |
+| `TRUST_PROXY_HEADERS` | `true` | Rate limits each visitor (20 questions a minute) by the address Cloud Run appends to `X-Forwarded-For` |
+| `REPORT_IN_REQUEST` | `true` | Unanswered questions reach WordPress before CPU is throttled |
+| `HF_HUB_OFFLINE` | `1` | The models come from the image; startup never waits on Hugging Face |
+| `WP_SHARED_SECRET` | from Secret Manager | The secret never appears in the service settings or the image |
+| `--no-invoker-iam-check` | | Visitors' browsers must reach the service directly. This is Google's recommended way to make a service public, and it works where an organization policy forbids `allUsers` ([public access](https://docs.cloud.google.com/run/docs/authenticating/public)) |
+
+### Step 6: Connect WordPress
+
+1. **Update the plugin by copying its folder.** With SFTP (for example FileZilla) or your host's file manager, copy the folder `wordpress-plugin/org-chatbot` from your local clone to `wp-content/plugins/` on the site, so it lands at `wp-content/plugins/org-chatbot/`. Overwrite the existing files when asked. Your settings and FAQ entries are kept, because they live in the database, not in the folder. Copy only that folder, not the rest of the repository. Then go to **Plugins** in WordPress: the plugin should show version 0.3.0. If it's new to the site, click **Activate**.
+2. **Add the secret to `wp-config.php`**, above the line `/* That's all, stop editing! */`:
+
+   ```php
+   define( 'ORG_CHATBOT_SHARED_SECRET', 'PASTE-THE-SECRET-FROM-STEP-4a' );
+   ```
+
+   The `wp-config.php` value wins over anything saved in the **Shared secret** field under **Chatbot → Settings**. Leave that field empty: values saved there are stored in the database.
+3. **Point the plugin at Cloud Run.** In **Chatbot → Settings**, set **Chatbot service URL** to the `URL` from Step 5 (it looks like `https://org-faq-chatbot-….run.app`), tick **The service sleeps when nobody is chatting**, and save. If the notice says the service is asleep or starting up, reload the page after a minute: the check has woken it. It should then say "Service connected" with your FAQ count.
+4. **Content-Security-Policy.** If the site sends one (from a security plugin, the host, or Cloudflare), add the service to `connect-src`, for example `connect-src 'self' https://org-faq-chatbot-xxxxx.run.app;`.
+5. **Firewalls and security plugins.** The service calls `GET /wp-json/org-chatbot/v1/kb` and `POST /wp-json/org-chatbot/v1/unanswered` from Google's addresses, which change. If you use a security plugin that blocks the REST API for logged-out callers, or a firewall such as Cloudflare's bot protection, allow `/wp-json/org-chatbot/v1/`. Both routes already refuse anyone without the shared secret.
+
+### Step 7: Test that everything works
+
+Run these in a private browser window, so you see the site as a visitor does.
+
+- [ ] **Cold start:** wait at least 20 minutes after the last use (Cloud Run keeps an idle instance for up to 15). Open the chat and ask a typed question straight away. You should see "Starting up the chatbot…" and then the answer, never "not available". Write down how long it took: that's what visitors wait after a quiet period.
+- [ ] **Follow-up:** ask a second question right away. It should answer in about a second.
+- [ ] **The smoke checks in [section 4](#4-smoke-checks-after-each-deploy):** a typed and a spoken question on a phone and a desktop, an out-of-scope question that appears under **Chatbot → Unanswered questions** with details masked, an FAQ edit that shows within a minute, and the offline message when `run.app` is blocked in DevTools.
+
+Then check speed, memory and startup in the console under **Cloud Run → org-faq-chatbot**:
+
+| What | Where | Target | If it misses |
+| --- | --- | --- | --- |
+| Voice reply time | **Logs**: search `source=voice`, read `total_ms` on each `reply` line | 95% within 5,000 ms (proposed NFR-PERF-07); measured 2,200–2,700 ms on a laptop | `gcloud run services update org-faq-chatbot --region=$REGION --cpu=4` |
+| Memory | **Metrics → Memory utilization** | Peak under 80% | Over 80%: raise `--memory=4Gi`. Under 50%: try `--memory=2Gi` |
+| Startup time | **Metrics → Container startup latency** | Well under 300 s | Close to it: raise `--cpu`, or raise `failureThreshold` (up to 120 with `periodSeconds=5`) |
+| Cold starts | **Metrics → Container instance count** | A few a day | Many more than visitors: check **Metrics → Request count** for a bot |
+| Cost | **Billing → Reports**, filtered to this project | Cents | See Costs below |
+
+### Step 8: Check the security
+
+Run the commands in Cloud Shell with the Step 1 variables and `URL` set.
+
+- [ ] **The secret guards the service's admin route.** Both should print `403`:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST $URL/v1/kb/refresh
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'X-Org-Chatbot-Key: wrong' $URL/v1/kb/refresh
+  ```
+- [ ] **The secret guards WordPress's FAQ feed.** This should print `403`:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' $SITE/wp-json/org-chatbot/v1/kb
+  ```
+- [ ] **Forged addresses don't dodge the rate limit.** This sends 22 questions, each with a different made-up first address. The last lines should be `429`:
+
+  ```bash
+  for i in $(seq 1 22); do curl -s -o /dev/null -w '%{http_code} ' -X POST -H 'Content-Type: application/json' \
+    -H "X-Forwarded-For: 192.0.2.$i" -d '{"message":"hi"}' $URL/v1/chat; done; echo
+  ```
+- [ ] **Other websites can't use it from a browser.** This should print no `access-control-allow-origin` line:
+
+  ```bash
+  curl -s -D - -o /dev/null -X OPTIONS -H 'Origin: https://evil.example.com' \
+    -H 'Access-Control-Request-Method: POST' $URL/v1/chat | grep -i access-control-allow-origin
+  ```
+- [ ] **No secret in the page.** View the source of any page and search for the first few characters of your secret. It must not appear. The `run.app` address does appear, by design.
+- [ ] **No visitor addresses in the logs.** Ask a question on the site, wait a minute, then run this. It should print nothing (Step 5, item 4):
+
+  ```bash
+  gcloud logging read 'log_id("run.googleapis.com/requests")' --freshness=10m --limit=5
+  ```
+- [ ] **Only the right people can change the project.** In **IAM & Admin → IAM**, only the people who maintain the chatbot have roles. Keep at least two Owners.
+- [ ] **Paperwork.** Add Google Cloud and your region to `docs/privacy.md` and the third-party service register (NFR-CMP-05): visitors' questions and recordings are processed there in memory and never stored, and their IP addresses aren't kept once Step 5, item 4 is done.
+
+| Risk | What stops it |
+| --- | --- |
+| Someone reads the service address from the page and calls it directly | Nothing to steal: the service only answers FAQ questions. A script can make it work, but at most one instance runs, each address gets 20 questions a minute, and the $10 spend cap is the ceiling |
+| A bot floods the chat | Same limits. If the cap triggers, the chatbot shows the offline message with contact details until the 1st, or until you lift the cap |
+| Someone pretends to be WordPress | `/v1/kb/refresh` needs the shared secret, and the service only fetches the FAQ from `WP_BASE_URL` |
+| Someone reads the FAQ feed or writes fake unanswered questions | Both WordPress routes need the shared secret |
+| The service itself is compromised | Its account can read the one secret and nothing else |
+
+**Why the service is public.** In this plugin, visitors' browsers talk to the service directly. Making the service private would need WordPress to relay every question and recording, and to sign each request with a Google key file kept on the web host. That relay would hold a PHP worker for the whole cold start, which many WordPress hosts cut off at 30 seconds. The shared secret never reaches the browser either way, and the limits above bound what a stranger can cost.
+
+### Costs
+
+Free each month, per billing account: 180,000 vCPU-seconds, 360,000 GiB-seconds and 2 million requests ([Cloud Run pricing](https://cloud.google.com/run/pricing)). With request-based billing you pay only while an instance starts and handles requests, not while it sits idle.
+
+| Item | Estimate |
+| --- | --- |
+| One cold start | About 60 s of startup at 4 vCPU (boosted) plus 10 s of boost after it, so about 280 vCPU-seconds and 210 GiB-seconds. About $0.007 at list price |
+| Free tier | About 600 cold starts a month (20 a day). Visitors within 15 minutes of each other share one start |
+| Questions while warm | Typed questions take milliseconds of CPU and voice about 2 to 3 seconds, which is small next to cold starts |
+| Image storage | The compressed image is likely 1.5 to 2 GB, so about $0.10 to $0.20 a month above the free 0.5 GB |
+| Builds and the secret | Free: 2,500 build-minutes, 6 secret versions and 10,000 secret reads a month |
+| Worst case | One instance busy all month would be over $100 at list price. The $10 cap stops it long before |
+
+These are estimates from local measurements. Step 7's cost check gives the real figure.
+
+### Day-to-day
+
+Paste the Step 1 variable block into Cloud Shell first.
+
+| Task | How |
+| --- | --- |
+| Edit the FAQ | Nothing to do: the service reloads within a minute. Saving an FAQ entry also wakes a sleeping service, which counts as one cold start |
+| Release a new version | Change the tag at the end of `IMAGE` (for example `:0.3.1`), run Step 3's build, then `gcloud run deploy org-faq-chatbot --image="$IMAGE" --region=$REGION`. Other settings carry over. If the plugin changed too, copy its folder again as in Step 6, item 1 |
+| Change a setting | `gcloud run services update org-faq-chatbot --region=$REGION --memory=4Gi` (or `--cpu=4`, `--max-instances=2`, …) |
+| Change the shared secret | `printf '%s' "$NEW" \| gcloud secrets versions add org-chatbot-shared-secret --data-file=-`, then `gcloud run services update org-faq-chatbot --region=$REGION --update-secrets=WP_SHARED_SECRET=org-chatbot-shared-secret:latest`, then put the new value in `wp-config.php` straight away. In between, a running service keeps answering from the FAQ it has, but one that starts up then can't load the FAQ. Finally destroy the old version in **Secret Manager** |
+| Watch costs | Cap emails come at 50%, 80% and 100% of $10. Check **Billing → Reports** once a month |
+| The spend cap triggered | The chatbot shows its offline message until the 1st. To restore it sooner, find the cause in **Metrics** (request count) and **Logs**, then open the budget from the spend cap banner, click **Edit budget → Lift spend cap**, and confirm. Service can take up to an hour to return |
+| People change | Keep at least two Owners on the project |
+
+### Troubleshooting
+
+Most problems show up in **Cloud Run → org-faq-chatbot → Logs**, or in the WordPress PHP error log (with `WP_DEBUG_LOG` on, `wp-content/debug.log`).
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Build stops with `PERMISSION_DENIED` | The build account lacks rights | Step 3, item 2 |
+| Build stops after 10 minutes | Default build time limit | Keep `--timeout=3600s` |
+| Deploy refuses `--no-invoker-iam-check` (`FAILED_PRECONDITION`) | The organization policy `run.managed.requireInvokerIam` is enforced | Ask an organization admin to exempt this project. The plugin needs a public service |
+| Deploy says the startup probe failed | Loading took over 300 s, or ran out of memory | Read Logs; raise `--cpu` or `--memory` |
+| Chat always says "not available", never "Starting up" | The serverless box isn't ticked, the URL is wrong, or the browser is blocked | Check **Chatbot → Settings**; in DevTools' Console look for a CORS error (the site's address must be in `ALLOWED_ORIGINS` exactly, with `https://` and no trailing slash) or a Content-Security-Policy error (Step 6, item 4) |
+| "Starting up" ends in "not available" | The service started but has no FAQ | `curl $URL/health`: `last_error` explains it. A `403` means the secret in `wp-config.php` differs from Secret Manager. A timeout or `ConnectError` means a firewall blocks Google (Step 6, item 5) |
+| Voice says it's unavailable, typing works | The speech model failed to load | `curl $URL/health` shows the `asr` state and error; usually memory |
+| An FAQ edit doesn't show | The service refreshes about once a minute | Wait a minute; if it persists, check `last_error` in `/health` |
+| Settings page says the service is asleep | Normal when nobody has chatted recently | Reload after a minute |
+| Some visitors get "not available" during a busy moment, with `429` under **Metrics → Request count** | More than 20 requests at once on the single instance | Raise `--max-instances=2` (the spend cap still applies) |
+| Everything stopped mid-month | The spend cap triggered | See Day-to-day |
+
+### Sources
+
+Checked on 17 November 2026. Prices and defaults can change.
+
+- [Cloud Run pricing](https://cloud.google.com/run/pricing)
+- [Cloud Run CPU limits and startup CPU boost](https://docs.cloud.google.com/run/docs/configuring/cpu)
+- [Cloud Run health checks (startup probes)](https://docs.cloud.google.com/run/docs/configuring/healthchecks)
+- [Cloud Run: allowing public access](https://docs.cloud.google.com/run/docs/authenticating/public)
+- [Spend cap budgets](https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps)
+- [Spend caps generally available (Google Cloud blog)](https://cloud.google.com/blog/topics/cost-management/google-cloud-spend-caps-now-generally-available)
+- [Cloud Build pricing](https://cloud.google.com/build/pricing)
+- [Artifact Registry pricing](https://cloud.google.com/artifact-registry/pricing)
+- [Secret Manager pricing](https://cloud.google.com/secret-manager/pricing)
+- [Secure-by-default organizations](https://cloud.google.com/resource-manager/docs/secure-by-default-organizations)
+- [Community thread: Cloud Run and X-Forwarded-For](https://discuss.google.dev/t/cloud-run-which-client-ip-can-i-safely-use-for-rate-limiting/409611)

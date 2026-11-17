@@ -3,7 +3,7 @@ Contributors: cpecaps-team
 Tags: faq, chatbot, accessibility, voice
 Requires at least: 6.4
 Requires PHP: 8.1
-Stable tag: 0.2.0
+Stable tag: 0.3.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,6 +28,10 @@ Requires the chatbot service from the same repository (chatbot-service/), reacha
 5. Allow the service in the site's Content-Security-Policy connect-src if one is set.
 
 == Changelog ==
+
+= 0.3.0 =
+* Serverless hosting (Google Cloud Run and similar): new setting "The service sleeps when nobody is chatting". The widget then wakes the service as soon as a visitor opens the chat, shows "Starting up the chatbot…" during a cold start, and waits long enough for it instead of showing "not available".
+* The settings screen reports a sleeping serverless service as asleep rather than as an error.
 
 = 0.2.0 =
 * New widget design: gradient header with site icon and site name, rounded message bubbles, orange send button, round launcher.

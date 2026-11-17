@@ -26,6 +26,8 @@
 		window.orgChatbotConfig = {
 			serviceUrl: new URLSearchParams( location.search ).get( 'service' ) || 'http://127.0.0.1:8000',
 			voiceEnabled: true,
+			// demo.html?serverless=1 behaves like a site whose service sleeps when idle (Cloud Run).
+			serverless: new URLSearchParams( location.search ).get( 'serverless' ) === '1',
 			workletUrl: '../org-chatbot/assets/js/recorder-worklet.js',
 			maxSeconds: 15,
 			botName: 'Ask us',
@@ -46,7 +48,9 @@
 				thinking: 'Looking that up…',
 				transcribing: 'Turning your recording into text…',
 				youSaid: 'You said:',
-				related: 'Related questions',				note: 'Answers come only from our FAQ.',
+				related: 'Related questions',
+				startingUp: 'Starting up the chatbot… this can take up to a minute after a quiet period.',
+				note: 'Answers come only from our FAQ.',
 				privacy: 'Privacy Notice',
 				consentTitle: 'Ask by voice?',
 				consentText: 'Your recording is sent to our chatbot service only to turn it into text so we can find the answer. The recording is not stored. Please do not say personal details such as your full name, phone number or ID numbers.',

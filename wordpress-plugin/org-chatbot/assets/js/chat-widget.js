@@ -16,8 +16,14 @@
 	}
 	const t = cfg.strings || {};
 	const TARGET_RATE = 16000;
-	const TEXT_TIMEOUT_MS = 12000;
-	const VOICE_TIMEOUT_MS = 25000;
+	// A serverless service may be asleep: allow for a cold start (Cloud Run holds the
+	// request while the container starts) and say so after a few seconds.
+	const COLD_START_MS = cfg.serverless ? 150000 : 0;
+	const TEXT_TIMEOUT_MS = 12000 + COLD_START_MS;
+	const VOICE_TIMEOUT_MS = 25000 + COLD_START_MS;
+	const STARTING_UP_AFTER_MS = 4000;
+	// Cloud Run keeps an idle instance for up to 15 minutes, sometimes less.
+	const WARM_FOR_MS = 5 * 60 * 1000;
 	const CONSENT_KEY = 'orgChatbotVoiceConsent';
 
 	// Open the matching FAQ answer when a chatbot link points at #faq-123.
@@ -111,11 +117,46 @@
 		return fragment;
 	}
 
-	async function request( path, options, timeoutMs ) {
+	let lastReply = 0; // when the service last answered: it stays awake for a while after
+	let lastWarmUp = 0;
+
+	function mayBeAsleep() {
+		return cfg.serverless && Date.now() - lastReply >= WARM_FOR_MS;
+	}
+
+	// Wake a sleeping serverless service when the visitor opens the chat, so the cold start
+	// overlaps with typing. Only on open (not hover): every wake-up is a billed cold start.
+	function warmUp() {
+		if ( ! mayBeAsleep() || Date.now() - lastWarmUp < WARM_FOR_MS ) {
+			return;
+		}
+		lastWarmUp = Date.now();
+		fetch( cfg.serviceUrl + '/health', { credentials: 'omit', cache: 'no-store' } )
+			.then( ( response ) => {
+				if ( response.ok ) {
+					lastReply = Date.now();
+				}
+			} )
+			.catch( () => {} );
+	}
+
+	async function request( path, options, timeoutMs, pending ) {
 		const controller = new AbortController();
 		const timer = setTimeout( () => controller.abort(), timeoutMs );
+		// Only a service that has probably been asleep is "starting up"; an awake one can
+		// still take several seconds over a voice question.
+		const slow = pending && mayBeAsleep()
+			? setTimeout( () => {
+				if ( pending.classList.contains( 'is-pending' ) ) {
+					pending.textContent = t.startingUp;
+				}
+			}, STARTING_UP_AFTER_MS )
+			: null;
 		try {
 			const response = await fetch( cfg.serviceUrl + path, { ...options, signal: controller.signal, credentials: 'omit' } );
+			if ( response.ok ) {
+				lastReply = Date.now();
+			}
 			let body = null;
 			try {
 				body = await response.json();
@@ -125,6 +166,7 @@
 			return { ok: response.ok, status: response.status, body };
 		} finally {
 			clearTimeout( timer );
+			clearTimeout( slow );
 		}
 	}
 
@@ -377,7 +419,8 @@
 			const result = await request(
 				'/v1/chat',
 				{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( { message: question } ) },
-				TEXT_TIMEOUT_MS
+				TEXT_TIMEOUT_MS,
+				pending
 			);
 			await handleResponse( pending, result );
 		} catch ( e ) {
@@ -453,7 +496,7 @@
 		try {
 			const data = new FormData();
 			data.append( 'audio', blob, 'question.wav' );
-			const result = await request( '/v1/chat/voice', { method: 'POST', body: data }, VOICE_TIMEOUT_MS );
+			const result = await request( '/v1/chat/voice', { method: 'POST', body: data }, VOICE_TIMEOUT_MS, pending );
 			if ( result.ok && result.body && result.body.transcript ) {
 				log.insertBefore( el( 'div', { class: 'org-chatbot__msg org-chatbot__msg--user' }, [
 					el( 'span', { class: 'org-chatbot__said', text: t.youSaid + ' ' } ),
@@ -497,6 +540,7 @@
 	let greeted = false;
 
 	function openPanel() {
+		warmUp();
 		panel.hidden = false;
 		launcher.setAttribute( 'aria-expanded', 'true' );
 		root.classList.add( 'is-open' );

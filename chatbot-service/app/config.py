@@ -89,6 +89,8 @@ class Settings:
     trust_proxy_headers: bool = False
     allow_private_network: bool = False
     report_unanswered: bool = True
+    # Send the unanswered-question report before replying instead of after (serverless hosts).
+    report_in_request: bool = False
 
     @property
     def threshold(self) -> float:
@@ -142,4 +144,5 @@ class Settings:
             trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
             allow_private_network=_bool("ALLOW_PRIVATE_NETWORK", False),
             report_unanswered=_bool("REPORT_UNANSWERED", True),
+            report_in_request=_bool("REPORT_IN_REQUEST", False),
         )

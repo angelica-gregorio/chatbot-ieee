@@ -45,8 +45,20 @@ class Org_Chatbot_Admin {
 		$health = get_transient( 'org_chatbot_health' );
 		if ( false === $health ) {
 			$response = wp_remote_get( $url . '/health', array( 'timeout' => 4 ) );
-			$health   = is_wp_error( $response ) ? array( 'error' => $response->get_error_message() ) : json_decode( wp_remote_retrieve_body( $response ), true );
-			set_transient( 'org_chatbot_health', is_array( $health ) ? $health : array( 'error' => 'invalid response' ), MINUTE_IN_SECONDS );
+			if ( is_wp_error( $response ) ) {
+				$message = $response->get_error_message();
+				$health  = array(
+					'error'     => $message,
+					// cURL error 28: no answer in time, which is what a sleeping serverless service does.
+					'timed_out' => false !== stripos( $message, 'timed out' ) || false !== strpos( $message, 'cURL error 28' ),
+				);
+			} else {
+				$health = json_decode( wp_remote_retrieve_body( $response ), true );
+				if ( ! is_array( $health ) ) {
+					$health = array( 'error' => sprintf( 'invalid response (HTTP %d)', (int) wp_remote_retrieve_response_code( $response ) ) );
+				}
+			}
+			set_transient( 'org_chatbot_health', $health, MINUTE_IN_SECONDS );
 		}
 		return is_array( $health ) ? $health : null;
 	}
@@ -67,10 +79,13 @@ class Org_Chatbot_Admin {
 			<h1><?php esc_html_e( 'Chatbot settings', 'org-chatbot' ); ?></h1>
 			<?php settings_errors( $name ); ?>
 
+			<?php $asleep = null !== $health && ! empty( $health['timed_out'] ) && ! empty( $s['serverless'] ); ?>
 			<?php if ( null !== $health ) : ?>
-				<div class="notice <?php echo empty( $health['error'] ) ? 'notice-info' : 'notice-error'; ?> inline">
+				<div class="notice <?php echo ( empty( $health['error'] ) || $asleep ) ? 'notice-info' : 'notice-error'; ?> inline">
 					<p>
-						<?php if ( ! empty( $health['error'] ) ) : ?>
+						<?php if ( $asleep ) : ?>
+							<?php esc_html_e( 'The chatbot service did not answer within a few seconds. A serverless service that was asleep is now starting up, because this check woke it: reload this page in a minute. If this notice stays, check the host\'s logs.', 'org-chatbot' ); ?>
+						<?php elseif ( ! empty( $health['error'] ) ) : ?>
 							<?php
 							/* translators: %s: error message. */
 							echo esc_html( sprintf( __( 'Chatbot service unreachable: %s', 'org-chatbot' ), $health['error'] ) );
@@ -118,7 +133,9 @@ class Org_Chatbot_Admin {
 						<th scope="row"><?php esc_html_e( 'Widget', 'org-chatbot' ); ?></th>
 						<td>
 							<label><input type="checkbox" name="<?php echo esc_attr( $name ); ?>[widget_enabled]" value="1" <?php checked( $s['widget_enabled'] ); ?> /> <?php esc_html_e( 'Show the chatbot on public pages', 'org-chatbot' ); ?></label><br />
-							<label><input type="checkbox" name="<?php echo esc_attr( $name ); ?>[voice_enabled]" value="1" <?php checked( $s['voice_enabled'] ); ?> /> <?php esc_html_e( 'Allow spoken questions (microphone button)', 'org-chatbot' ); ?></label>
+							<label><input type="checkbox" name="<?php echo esc_attr( $name ); ?>[voice_enabled]" value="1" <?php checked( $s['voice_enabled'] ); ?> /> <?php esc_html_e( 'Allow spoken questions (microphone button)', 'org-chatbot' ); ?></label><br />
+							<label><input type="checkbox" name="<?php echo esc_attr( $name ); ?>[serverless]" value="1" <?php checked( $s['serverless'] ); ?> /> <?php esc_html_e( 'The service sleeps when nobody is chatting (serverless host such as Google Cloud Run)', 'org-chatbot' ); ?></label>
+							<p class="description"><?php esc_html_e( 'The chat then wakes the service when a visitor opens it and shows "Starting up the chatbot…" while it starts, instead of "not available".', 'org-chatbot' ); ?></p>
 						</td>
 					</tr>
 					<tr>

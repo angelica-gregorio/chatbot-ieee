@@ -59,6 +59,7 @@ class Org_Chatbot_Widget {
 		$config = array(
 			'serviceUrl'   => (string) $settings['service_url'],
 			'voiceEnabled' => ! empty( $settings['voice_enabled'] ),
+			'serverless'   => ! empty( $settings['serverless'] ),
 			'workletUrl'   => ORG_CHATBOT_URL . 'assets/js/recorder-worklet.js',
 			'maxSeconds'   => 15,
 			'botName'      => (string) $settings['bot_name'],
@@ -79,7 +80,9 @@ class Org_Chatbot_Widget {
 				'thinking'         => __( 'Looking that up…', 'org-chatbot' ),
 				'transcribing'     => __( 'Turning your recording into text…', 'org-chatbot' ),
 				'youSaid'          => __( 'You said:', 'org-chatbot' ),
-				'related'          => __( 'Related questions', 'org-chatbot' ),				'note'             => __( 'Answers come only from our FAQ.', 'org-chatbot' ),
+				'related'          => __( 'Related questions', 'org-chatbot' ),
+				'startingUp'       => __( 'Starting up the chatbot… this can take up to a minute after a quiet period.', 'org-chatbot' ),
+				'note'             => __( 'Answers come only from our FAQ.', 'org-chatbot' ),
 				'privacy'          => __( 'Privacy Notice', 'org-chatbot' ),
 				'consentTitle'     => __( 'Ask by voice?', 'org-chatbot' ),
 				'consentText'      => __( 'Your recording is sent to our chatbot service only to turn it into text so we can find the answer. The recording is not stored. Please do not say personal details such as your full name, phone number or ID numbers.', 'org-chatbot' ),
